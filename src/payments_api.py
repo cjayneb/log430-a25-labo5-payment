@@ -6,7 +6,35 @@ Auteurs : Gabriel C. Ullmann, Fabio Petrillo, 2025
 from flask import Flask, request, jsonify
 from controllers.payment_controller import add_payment, process_payment, get_payment
 
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
 app = Flask(__name__)
+
+resource = Resource.create({
+   "service.name": "payment-service",
+   "service.version": "1.0.0"
+})
+
+trace.set_tracer_provider(TracerProvider(resource=resource))
+tracer = trace.get_tracer(__name__)
+
+# Indiquez l'endpoint Jaeger (hostname dans Docker)
+otlp_exporter = OTLPSpanExporter(
+   endpoint="http://jaeger:4317",
+   insecure=True
+)
+span_processor = BatchSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+# Automatic Flask instrumentation
+FlaskInstrumentor().instrument_app(app)
+RequestsInstrumentor().instrument()
 
 @app.route("/")
 def home():
@@ -16,13 +44,14 @@ def home():
 @app.route("/payments", methods=["POST"])
 def post_add_payment():
     """Create a new payment"""
-    print("Endpoint: POST /payments")
-    try:
-        result = add_payment(request)
-        return jsonify(result), 201
-    except Exception as e:
-        print(e)
-        return jsonify({"error": str(e)}), 400
+    with tracer.start_as_current_span("POST /payments-api/payments"):
+        print("Endpoint: POST /payments")
+        try:
+            result = add_payment(request)
+            return jsonify(result), 201
+        except Exception as e:
+            print(e)
+            return jsonify({"error": str(e)}), 400
 
 @app.route("/payments/process/<int:payment_id>", methods=["POST"])
 def post_process_payment(payment_id):
